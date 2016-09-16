@@ -1,13 +1,17 @@
+import asyncio
+
 from asyncio_redis.connection import Connection
 
-from .sentinel_protocol import _all_commands, SentinelProtocol
+from .protocol import _all_commands, SentinelProtocol
 
 
 class SentinelConnection(Connection):
     @classmethod
+    @asyncio.coroutine
     def create(cls, host='localhost', port=6379, *, encoder=None, loop=None, protocol_class=SentinelProtocol, **kwargs):
-        return super().create(host, port, encoder=encoder, auto_reconnect=False,
-                              loop=loop, protocol_class=protocol_class)
+        connection = yield from super().create(host, port, encoder=encoder, auto_reconnect=False,
+                                               loop=loop, protocol_class=protocol_class)
+        return connection
 
     def __getattr__(self, name):
         # Only proxy commands.
