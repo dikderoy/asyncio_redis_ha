@@ -171,7 +171,7 @@ class _RedisProtocolMeta(_CoreRedisProtocolMeta):
 
 class ExtendedProtocol(RedisProtocol, metaclass=_RedisProtocolMeta):
     @_query_command
-    def role(self, tr) -> ListReply:
+    def role(self, tr) -> NestedListReply:
         return self._query(tr, b'role')
 
 

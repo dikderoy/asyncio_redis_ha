@@ -8,15 +8,22 @@ class NestedListReply(ListReply):
     @asyncio.coroutine
     def aslist(self):
         """ Return the result as a Python ``list[list]``. """
-        final = []
-        data = yield from super().aslist()
+
+        @asyncio.coroutine
+        def _resolve_nested(multibulk: MultiBulkReply):
+            result = []
+            l1 = yield from ListReply(multibulk).aslist()
+            """:type l1 list"""
+            for x in l1:
+                if isinstance(x, MultiBulkReply):
+                    l2 = yield from _resolve_nested(x)
+                    result.append(l2)
+                else:
+                    result.append(x)
+            return result
+
         """:type data : list"""
-        for x in data:
-            if isinstance(x, MultiBulkReply):
-                nested = yield from ListReply(x).aslist()
-                final.append(nested)
-            else:
-                final.append(x)
+        final = yield from _resolve_nested(self._result)
         return final
 
 

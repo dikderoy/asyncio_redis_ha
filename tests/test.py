@@ -42,8 +42,9 @@ from asyncio_redis.replies import (
     ZRangeReply,
 )
 
+from asyncio_redis_ha.connection import SentinelConnection
 from asyncio_redis_ha.protocol import ExtendedProtocol, SentinelProtocol
-from asyncio_redis_ha.replies import NestedDictReply
+from asyncio_redis_ha.replies import NestedDictReply, NestedListReply
 
 try:
     import hiredis
@@ -54,6 +55,9 @@ PORT = int(os.environ.get('REDIS_PORT', 6379))
 HOST = os.environ.get('REDIS_HOST', 'localhost')
 START_REDIS_SERVER = bool(os.environ.get('START_REDIS_SERVER', False))
 
+SENTINEL_PORT = int(os.environ.get('SENTINEL_PORT', 26379))
+SENTINEL_HOST = os.environ.get('SENTINEL_HOST', '172.17.0.6')
+
 # In Python 3.4.4, `async` was renamed to `ensure_future`.
 try:
     ensure_future = asyncio.ensure_future
@@ -62,15 +66,15 @@ except AttributeError:
 
 
 @asyncio.coroutine
-def connect(loop, protocol=RedisProtocol):
+def connect(loop, protocol=RedisProtocol, host=HOST, port=PORT):
     """ Connect to redis server. Return transport/protocol pair. """
     if PORT:
         transport, protocol = yield from loop.create_connection(
-            lambda: protocol(loop=loop), HOST, PORT)
+            lambda: protocol(loop=loop), host, port)
         return transport, protocol
     else:
         transport, protocol = yield from loop.create_unix_connection(
-            lambda: protocol(loop=loop), HOST)
+            lambda: protocol(loop=loop), host)
         return transport, protocol
 
 
@@ -86,7 +90,13 @@ def redis_test(function):
         @asyncio.coroutine
         def c():
             # Create connection
-            transport, protocol = yield from connect(self.loop, self.protocol_class)
+            host = self.host if hasattr(self, 'host') and self.host else HOST
+            port = self.port if hasattr(self, 'port') and self.port else PORT
+            transport, protocol = yield from connect(
+                self.loop, self.protocol_class,
+                host=host,
+                port=port
+            )
 
             # Run test
             try:
@@ -1981,6 +1991,46 @@ class RedisConnectionTest(TestCase):
         self.loop.run_until_complete(test())
 
 
+class SentinelConnectionTest(TestCase):
+    """ Test connection class. """
+
+    def setUp(self):
+        self.loop = asyncio.get_event_loop()
+        self.host = SENTINEL_HOST
+        self.port = SENTINEL_PORT
+
+    def test_connection(self):
+        @asyncio.coroutine
+        def test():
+            # Create connection
+            connection = yield from SentinelConnection.create(host=SENTINEL_HOST, port=SENTINEL_PORT)
+            self.assertEqual(repr(connection), "Connection(host=%r, port=%r)" % (SENTINEL_HOST, SENTINEL_PORT))
+            self.assertEqual(connection._closing, False)
+
+            result = yield from connection.get_master_addr_by_name('mymaster')
+            result = yield from result.aslist()
+            """:type result list"""
+            self.assertEqual(len(result), 2)
+
+            connection.close()
+
+            # Test closing flag
+            self.assertEqual(connection._closing, True)
+
+        self.loop.run_until_complete(test())
+
+    def test_no_connection(self):
+        @asyncio.coroutine
+        def test2():
+            # try create connection
+            try:
+                connection = yield from SentinelConnection.create(host='127.0.0.2', auto_reconnect=False)
+            except Exception as e:
+                self.assertIsInstance(e, ConnectionError)
+
+        self.loop.run_until_complete(test2())
+
+
 class RedisPoolTest(TestCase):
     """ Test connection pooling. """
 
@@ -2396,29 +2446,27 @@ class ExtendedRedisProtocolTest(RedisProtocolTest):
     def test_role(self, transport, protocol):
         # Test 'keys'
         multibulk = yield from protocol.role()
-        self.assertIsInstance(multibulk, ListReply)
+        self.assertIsInstance(multibulk, NestedListReply)
         data = yield from multibulk.aslist()
         self.assertEqual(data[0], 'master')
-
-        # self.assertEqual(set(all_keys), {
-        #     'our-keytest-key1',
-        #     'our-keytest-key2',
-        #     'our-keytest-key3'})
+        self.assertIsInstance(data[2], list)
+        print(data)
 
 
 class SentinelProtocolTest(TestCase):
     def setUp(self):
-        global HOST, PORT
-        HOST, PORT = '172.17.0.6', 26379
-
         self.loop = asyncio.get_event_loop()
         self.protocol_class = SentinelProtocol
+        self.host = SENTINEL_HOST
+        self.port = SENTINEL_PORT
 
     @redis_test
     def test_get_master_addr_by_name(self, transport, protocol):
         reply = yield from protocol.get_master_addr_by_name('mymaster')
         self.assertIsInstance(reply, ListReply)
         data = yield from reply.aslist()
+        """:type data list"""
+        self.assertGreaterEqual(len(data), 2)
         self.assertRegex(data[0], '\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}')
         self.assertRegex(data[1], '\d+')
         pass
@@ -2428,14 +2476,14 @@ class SentinelProtocolTest(TestCase):
         reply = yield from protocol.slaves('mymaster')
         self.assertIsInstance(reply, NestedDictReply)
         data = yield from reply.aslist()
-        print(data)
+        self.assertIsInstance(data, list)
 
     @redis_test
     def test_sentinels(self, transport, protocol):
         reply = yield from protocol.sentinels('mymaster')
         self.assertIsInstance(reply, NestedDictReply)
         data = yield from reply.aslist()
-        print(data)
+        self.assertIsInstance(data, list)
 
 
 if __name__ == '__main__':
