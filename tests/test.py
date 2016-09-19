@@ -42,7 +42,7 @@ from asyncio_redis.replies import (
     ZRangeReply,
 )
 
-from asyncio_redis_ha.connection import SentinelConnection
+from asyncio_redis_ha.connection import SentinelConnection, RedisConnection
 from asyncio_redis_ha.protocol import ExtendedProtocol, SentinelProtocol
 from asyncio_redis_ha.replies import NestedDictReply, NestedListReply
 
@@ -1964,7 +1964,7 @@ class NoTypeCheckingTest(TestCase):
         loop.run_until_complete(test())
 
 
-class RedisConnectionTest(TestCase):
+class OrinalConnectionTest(TestCase):
     """ Test connection class. """
 
     def setUp(self):
@@ -1989,6 +1989,40 @@ class RedisConnectionTest(TestCase):
             self.assertEqual(connection._closing, True)
 
         self.loop.run_until_complete(test())
+
+
+class RedisConnectionTest(TestCase):
+    """ Test connection class. """
+
+    def setUp(self):
+        self.loop = asyncio.get_event_loop()
+        self.protocol_class = ExtendedProtocol
+
+    def test_connection(self):
+        @asyncio.coroutine
+        def test():
+            # Create connection
+            connection = yield from RedisConnection.create(host=HOST, port=PORT, protocol_class=self.protocol_class)
+            self.assertEqual(repr(connection), "Connection(host=%r, port=%r)" % (HOST, PORT))
+            self.assertEqual(connection._closing, False)
+
+            # Test new methods
+            result = yield from connection.role()
+            result = yield from result.aslist()
+            self.assertEqual(result[0], 'master')
+
+            # Test old methods
+            yield from connection.set('key', 'value')
+            result = yield from connection.get('key')
+            self.assertEqual(result, 'value')
+
+            connection.close()
+
+            # Test closing flag
+            self.assertEqual(connection._closing, True)
+
+        self.loop.run_until_complete(test())
+
 
 
 class SentinelConnectionTest(TestCase):
