@@ -2024,7 +2024,6 @@ class RedisConnectionTest(TestCase):
         self.loop.run_until_complete(test())
 
 
-
 class SentinelConnectionTest(TestCase):
     """ Test connection class. """
 
@@ -2057,10 +2056,8 @@ class SentinelConnectionTest(TestCase):
         @asyncio.coroutine
         def test2():
             # try create connection
-            try:
+            with self.assertRaises(ConnectionError):
                 connection = yield from SentinelConnection.create(host='127.0.0.2', auto_reconnect=False)
-            except Exception as e:
-                self.assertIsInstance(e, ConnectionError)
 
         self.loop.run_until_complete(test2())
 
@@ -2214,8 +2211,8 @@ class RedisPoolTest(TestCase):
             for i in range(0, 10):
                 self.assertEqual(connection.connections_in_use, i)
                 futures.append(ensure_future(sink(i), loop=self.loop))
-                yield from asyncio.sleep(.1,
-                                         loop=self.loop)  # Sleep to make sure that the above coroutine started executing.
+                # Sleep to make sure that the above coroutine started executing.
+                yield from asyncio.sleep(.1, loop=self.loop)
 
             # One more blocking call should fail.
             with self.assertRaises(NoAvailableConnectionsInPoolError) as e:

@@ -9,9 +9,8 @@ from .protocol import _all_commands, SentinelProtocol
 
 
 class RedisConnection(Connection):
-    def __init__(self, auto_reconnect=False, reconnect_cb=None):
+    def __init__(self, reconnect_cb=None):
         super().__init__()
-        self.auto_reconnect = auto_reconnect,
         self._reconnect_cb = reconnect_cb
 
     @classmethod
@@ -36,7 +35,7 @@ class RedisConnection(Connection):
                 self._reset_retry_interval()
                 return
             except OSError:
-                if not self.auto_reconnect:
+                if not self._auto_reconnect:
                     raise ConnectionError
                 # Sleep and try again
                 self._increase_retry_interval()
