@@ -43,6 +43,7 @@ from asyncio_redis.replies import (
 )
 
 from asyncio_redis_ha.connection import SentinelConnection, RedisConnection
+from asyncio_redis_ha.manager import ConnectionManager, HighAvailabilityConfig
 from asyncio_redis_ha.protocol import ExtendedProtocol, SentinelProtocol
 from asyncio_redis_ha.replies import NestedDictReply, NestedListReply
 
@@ -2067,6 +2068,11 @@ class RedisPoolTest(TestCase):
 
     def setUp(self):
         self.loop = asyncio.get_event_loop()
+        self.pool_class = Pool
+
+    @asyncio.coroutine
+    def create_pool(self, **kwargs):
+        return self.pool_class.create(host=HOST, port=PORT, **kwargs)
 
     def test_pool(self):
         """ Test creation of Connection instance. """
@@ -2074,7 +2080,7 @@ class RedisPoolTest(TestCase):
         @asyncio.coroutine
         def test():
             # Create pool
-            connection = yield from Pool.create(host=HOST, port=PORT)
+            connection = yield from self.create_pool()
             self.assertEqual(repr(connection), "Pool(host=%r, port=%r, poolsize=1)" % (HOST, PORT))
 
             # Test get/set
@@ -2098,7 +2104,7 @@ class RedisPoolTest(TestCase):
         @asyncio.coroutine
         def test():
             # Create connection
-            connection = yield from Pool.create(host=HOST, port=PORT)
+            connection = yield from self.create_pool()
             self.assertEqual(connection.connections_in_use, 0)
 
             # Wait for ever. (This blocking pop doesn't return.)
@@ -2130,7 +2136,7 @@ class RedisPoolTest(TestCase):
         @asyncio.coroutine
         def test():
             # Create connection
-            connection = yield from Pool.create(host=HOST, port=PORT, poolsize=2)
+            connection = yield from self.create_pool(poolsize=2)
             yield from connection.delete(['my-list'])
 
             results = []
@@ -2171,11 +2177,11 @@ class RedisPoolTest(TestCase):
 
         @asyncio.coroutine
         def test():
-            c1 = yield from Pool.create(host=HOST, port=PORT, poolsize=10, db=1)
-            c2 = yield from Pool.create(host=HOST, port=PORT, poolsize=10, db=2)
+            c1 = yield from self.create_pool(poolsize=10, db=1)
+            c2 = yield from self.create_pool(poolsize=10, db=2)
 
-            c3 = yield from Pool.create(host=HOST, port=PORT, poolsize=10, db=1)
-            c4 = yield from Pool.create(host=HOST, port=PORT, poolsize=10, db=2)
+            c3 = yield from self.create_pool(poolsize=10, db=1)
+            c4 = yield from self.create_pool(poolsize=10, db=2)
 
             yield from c1.set('key', 'A')
             yield from c2.set('key', 'B')
@@ -2199,7 +2205,7 @@ class RedisPoolTest(TestCase):
         @asyncio.coroutine
         def test():
             # Create connection
-            connection = yield from Pool.create(host=HOST, port=PORT, poolsize=10)
+            connection = yield from self.create_pool(poolsize=10)
             for i in range(0, 10):
                 yield from connection.delete(['my-list-%i' % i])
 
@@ -2232,7 +2238,7 @@ class RedisPoolTest(TestCase):
         @asyncio.coroutine
         def test():
             # Create connection
-            connection = yield from Pool.create(host=HOST, port=PORT, poolsize=3)
+            connection = yield from self.create_pool(poolsize=3)
 
             # Register script
             script = yield from connection.register_script("return 100")
@@ -2255,7 +2261,7 @@ class RedisPoolTest(TestCase):
         @asyncio.coroutine
         def test():
             # Create connection
-            connection = yield from Pool.create(host=HOST, port=PORT, poolsize=3)
+            connection = yield from self.create_pool(poolsize=3)
 
             t1 = yield from connection.multi()
             t2 = yield from connection.multi()
@@ -2293,7 +2299,7 @@ class RedisPoolTest(TestCase):
 
         @asyncio.coroutine
         def test():
-            connection = yield from Pool.create(host=HOST, port=PORT, poolsize=1)
+            connection = yield from self.create_pool(poolsize=1)
             yield from connection.set('key', 'value')
 
             # Try the reconnect cycle several times. (Be sure that the
@@ -2343,7 +2349,7 @@ class RedisPoolTest(TestCase):
         @asyncio.coroutine
         def test():
             # Create connection
-            connection = yield from Pool.create(host=HOST, port=PORT, poolsize=1, auto_reconnect=False)
+            connection = yield from self.create_pool(poolsize=1, auto_reconnect=False)
             yield from connection.set('key', 'value')
 
             # Close transport
@@ -2515,6 +2521,103 @@ class SentinelProtocolTest(TestCase):
         self.assertIsInstance(reply, NestedDictReply)
         data = yield from reply.aslist()
         self.assertIsInstance(data, list)
+
+
+class GuardedPoolTest(RedisPoolTest):
+    """ Test connection pooling. """
+
+    def setUp(self):
+        self.loop = asyncio.get_event_loop()
+        self.pool_class = ConnectionManager
+
+    @asyncio.coroutine
+    def create_pool(self, poolsize=1, auto_reconnect=False, **kwargs):
+        config = HighAvailabilityConfig(
+            cluster_name='mymaster',
+            sentinels=[
+                ('172.17.0.5', 26379),
+                ('172.17.0.6', 26379),
+                ('172.17.0.7', 26379)
+            ], **kwargs)
+
+        c = self.pool_class(config, poolsize=poolsize, loop=self.loop)
+        yield from c.discover()
+        return c
+
+    def test_pool(self):
+        """ Test creation of Connection instance. """
+
+        @asyncio.coroutine
+        def test():
+            # Create pool
+            connection = yield from self.create_pool()
+            self.assertEqual(repr(connection), "GuardedPool(cluster=%r, poolsize=1)" % 'mymaster')
+
+            # Test get/set
+            yield from connection.set('key', 'value')
+            result = yield from connection.get('key')
+            self.assertEqual(result, 'value')
+
+            # Test default poolsize
+            self.assertEqual(connection.poolsize, 1)
+
+            connection.close()
+
+        self.loop.run_until_complete(test())
+
+    def test_connection_lost(self):
+        """
+        When the transport is closed, any further commands should raise
+        NotConnectedError. (Unless the transport would be auto-reconnecting and
+        have established a new connection.)
+        """
+
+        @asyncio.coroutine
+        def test():
+            # Create connection
+            transport, protocol = yield from connect(self.loop, RedisProtocol)
+            yield from protocol.set('key', 'value')
+
+            # Close transport
+            self.assertEqual(protocol.is_connected, True)
+            transport.close()
+            yield from asyncio.sleep(.5, loop=self.loop)
+            self.assertEqual(protocol.is_connected, False)
+
+            # Test get/set
+            with self.assertRaises(NotConnectedError):
+                yield from protocol.set('key', 'value')
+
+            transport.close()
+
+        self.loop.run_until_complete(test())
+
+        # Test connection lost in connection pool.
+        @asyncio.coroutine
+        def test():
+            # Create connection
+            connection = yield from self.create_pool(poolsize=1, auto_reconnect=False)
+            yield from connection.set('key', 'value')
+
+            # Close sentinels to make discover and recovery fail
+            """:type ConnectionManager"""
+            for s in connection._sentinels:
+                s.close()
+            # Ruin configuration to prevent reopenning of sentinel connections
+            connection.config.sentinels = []
+
+            # Close transport
+            transport = connection._connections[0].transport
+            transport.close()
+            yield from asyncio.sleep(.5, loop=self.loop)
+
+            # Test get/set
+            with self.assertRaises(NoAvailableConnectionsInPoolError) as e:
+                yield from connection.set('key', 'value')
+
+            connection.close()
+
+        self.loop.run_until_complete(test())
 
 
 if __name__ == '__main__':

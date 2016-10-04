@@ -21,8 +21,10 @@ class RedisConnection(Connection):
 
     @classmethod
     @asyncio.coroutine
-    def create(cls, host='localhost', port=6379, *, encoder=None, loop=None, protocol_class=ExtendedProtocol, **kw):
-        connection = yield from super().create(host, port, encoder=encoder, auto_reconnect=False,
+    def create(cls, host='localhost', port=6379, *, password=None, db=0,
+               encoder=None, loop=None, protocol_class=ExtendedProtocol, **kw):
+        connection = yield from super().create(host, port, password=password, db=db,
+                                               encoder=encoder, auto_reconnect=False,
                                                loop=loop, protocol_class=protocol_class)
         return connection
 
@@ -48,6 +50,9 @@ class RedisConnection(Connection):
         :type reconnect_cb: ~callable
         :param reconnect_cb: (optional) callback, which return (host, port) tuple to reconfigure connection on reconnect
         """
+        # todo: test this method
+        # todo: add option to "not ensure" initial connection availability (for sentinel connections)
+
         assert port >= 0, "Unexpected port value: %r" % (port,)
         connection = cls()
 

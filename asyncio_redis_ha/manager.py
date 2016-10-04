@@ -12,7 +12,7 @@ from asyncio_redis_ha.protocol import ExtendedProtocol
 class HighAvailabilityConfig:
     def __init__(self,
                  cluster_name: str,
-                 sentinels: dict,
+                 sentinels: list,
                  db=0,
                  password=None,
                  encoder=None,
@@ -33,7 +33,7 @@ class ConnectionManager:
     :type _connections: list[RedisConnection]
     """
 
-    def __init__(self, config: HighAvailabilityConfig, poolsize=5, loop=None):
+    def __init__(self, config: HighAvailabilityConfig, poolsize=1, loop=None):
         """
 
         :param config: HighAvailabilityConfig
@@ -49,11 +49,17 @@ class ConnectionManager:
     def _create_sentinel_connections(self):
         for x in self.config.sentinels:
             try:
-                connection = yield from SentinelConnection.create(*x, auto_reconnect=False, loop=self._loop)
+                connection = yield from SentinelConnection.create(*x, auto_reconnect=True, loop=self._loop)
                 """:type connection SentinelConnection"""
                 self._sentinels.append(connection)
             except ConnectionError:
                 pass
+
+    def _close_sentinel_connections(self):
+        for s in self._sentinels:
+            s.close()
+
+        self._sentinels = []
 
     @asyncio.coroutine
     def _add_pool_instance(self, host='localhost', port=6379, protocol_class=ExtendedProtocol):
@@ -95,6 +101,9 @@ class ConnectionManager:
         config_pair = None
         self._close_master_pool()
 
+        if self.sentinels_connected < 1:
+            yield from self._create_sentinel_connections()
+
         for sentinel in [c for c in self._sentinels if c.protocol.is_connected]:
             try:
                 # try retrieve master address from sentinels
@@ -110,7 +119,8 @@ class ConnectionManager:
                         connection = yield from self._add_pool_instance(config_pair[0], int(config_pair[1]))
                         reply = yield from connection.role()
                         """:type reply ListReply"""
-                        role = reply.aslist()[0]
+                        reply = yield from reply.aslist()
+                        role = reply[0]
                         if role == 'master':
                             for x in range(self.poolsize - 1):
                                 yield from self._add_pool_instance(config_pair[0], int(config_pair[1]))
@@ -119,7 +129,7 @@ class ConnectionManager:
                         pass
 
         if self.connections_connected < 1:
-            raise ConnectionError
+            raise NoAvailableConnectionsInPoolError
         logger.info('master at %s', config_pair)
 
     def _discover_sentinels(self):
@@ -137,8 +147,12 @@ class ConnectionManager:
 
         self._connections = []
 
+    def close(self):
+        self._close_master_pool()
+        self._close_sentinel_connections()
+
     def __repr__(self):
-        return 'GuardedPool(host=%r, port=%r, poolsize=%r)' % (self._host, self._port, self._poolsize)
+        return 'GuardedPool(cluster=%r, poolsize=%r)' % (self.config.cluster_name, self._poolsize)
 
     @property
     def poolsize(self):
@@ -158,6 +172,13 @@ class ConnectionManager:
         The amount of open TCP connections.
         """
         return sum([1 for c in self._connections if c.protocol.is_connected])
+
+    @property
+    def sentinels_connected(self):
+        """
+        The amount of open TCP connections.
+        """
+        return sum([1 for c in self._sentinels if c.protocol.is_connected])
 
     def _get_free_connection(self):
         """
@@ -182,14 +203,22 @@ class ConnectionManager:
         Proxy to a protocol. (This will choose a protocol instance that's not
         busy in a blocking request or transaction.)
         """
-        connection = self._get_free_connection()
 
-        if connection:
-            return getattr(connection, name)
-        else:
-            raise NoAvailableConnectionsInPoolError(
-                'No available connections in the pool: size=%s, in_use=%s, connected=%s' % (
-                    self.poolsize, self.connections_in_use, self.connections_connected))
+        @asyncio.coroutine
+        def guard(*args, **kwargs):
+            """wrapper ensuring that where are active connections to master, and performing rediscover if needed"""
+            if self.connections_connected == 0:
+                yield from self._discover_master()
+            connection = self._get_free_connection()
+
+            if connection:
+                result = yield from getattr(connection, name)(*args, **kwargs)
+                return result
+            else:
+                raise NoAvailableConnectionsInPoolError(
+                    'No available connections in the pool: size=%s, in_use=%s, connected=%s' % (
+                        self.poolsize, self.connections_in_use, self.connections_connected))
+        return guard
 
     # Proxy the register_script method, so that the returned object will
     # execute on any available connection in the pool.
