@@ -1,8 +1,7 @@
 import asyncio
 from functools import wraps
 
-from asyncio_redis import Script, NoAvailableConnectionsInPoolError
-from asyncio_redis.replies import ListReply
+from asyncio_redis import Script, NoAvailableConnectionsInPoolError, NotConnectedError
 
 from asyncio_redis_ha.connection import SentinelConnection, RedisConnection
 from asyncio_redis_ha.log import logger
@@ -46,16 +45,25 @@ class ConnectionManager:
         self.cluster_name = self.config.cluster_name
 
     @asyncio.coroutine
-    def _create_sentinel_connections(self):
-        for x in self.config.sentinels:
+    def _recreate_sentinel_connections(self):
+        """creates connections for configured sentinels, closes previously opened connections if any"""
+        self._close_sentinel_connections()
+
+        for conf in self.config.sentinels:
             try:
-                connection = yield from SentinelConnection.create(*x, auto_reconnect=True, loop=self._loop)
+                logger.info('connecting sentinel (%s, %s)', *conf)
+                connection = yield from SentinelConnection.configurable_create(
+                    *conf, loop=self._loop, auto_reconnect=True, ensure_connection_established=False
+                )
                 """:type connection SentinelConnection"""
                 self._sentinels.append(connection)
             except ConnectionError:
                 pass
+        yield from asyncio.sleep(.1)  # make sure above coroutines run
 
     def _close_sentinel_connections(self):
+        logger.info('closing sentinel connections')
+
         for s in self._sentinels:
             s.close()
 
@@ -75,7 +83,8 @@ class ConnectionManager:
         :type protocol_class: :class:`~asyncio_redis.RedisProtocol`
         :param protocol_class: (optional) redis protocol implementation
         """
-        connection = yield from RedisConnection.create(
+        logger.info('connecting redis-master (%s, %s)', host, port)
+        connection = yield from RedisConnection.configurable_create(
             host=host,
             port=port,
             password=self.config.password,
@@ -90,7 +99,6 @@ class ConnectionManager:
 
     @asyncio.coroutine
     def discover(self):
-        yield from self._create_sentinel_connections()
         yield from self._discover_master()
 
     @asyncio.coroutine
@@ -102,31 +110,33 @@ class ConnectionManager:
         self._close_master_pool()
 
         if self.sentinels_connected < 1:
-            yield from self._create_sentinel_connections()
+            yield from self._recreate_sentinel_connections()
 
         for sentinel in [c for c in self._sentinels if c.protocol.is_connected]:
             try:
                 # try retrieve master address from sentinels
-                config_pair = yield from sentinel.get_master_addr_by_name(self.cluster_name)
-            except ConnectionError:
-                continue
-
-            if isinstance(config_pair, ListReply):
-                config_pair = yield from config_pair.aslist()
                 """:type config_pair list"""
-                if len(config_pair) >= 2:
-                    try:
-                        connection = yield from self._add_pool_instance(config_pair[0], int(config_pair[1]))
-                        reply = yield from connection.role()
-                        """:type reply ListReply"""
-                        reply = yield from reply.aslist()
-                        role = reply[0]
-                        if role == 'master':
-                            for x in range(self.poolsize - 1):
-                                yield from self._add_pool_instance(config_pair[0], int(config_pair[1]))
-                            break
-                    except ConnectionError:
-                        pass
+                config_pair = yield from (yield from sentinel.get_master_addr_by_name(self.cluster_name)).aslist()
+                break
+            except ConnectionError:
+                pass
+
+        if not config_pair or not isinstance(config_pair, list):
+            raise NotConnectedError('Failed to discover redis-master')
+
+        if len(config_pair) >= 2:
+            try:
+                connection = yield from self._add_pool_instance(config_pair[0], int(config_pair[1]))
+                reply = yield from (yield from connection.role()).aslist()
+                role = reply[0]
+                if role == 'master':
+                    # initialize rest of the pool
+                    for x in range(self.poolsize - 1):
+                        yield from self._add_pool_instance(config_pair[0], int(config_pair[1]))
+                else:
+                    self._close_master_pool()
+            except ConnectionError:
+                pass
 
         if self.connections_connected < 1:
             raise NoAvailableConnectionsInPoolError
@@ -142,6 +152,7 @@ class ConnectionManager:
         """
         Close all the connections in the pool.
         """
+        logger.info('closing redis-master connections')
         for c in self._connections:
             c.close()
 
@@ -152,7 +163,7 @@ class ConnectionManager:
         self._close_sentinel_connections()
 
     def __repr__(self):
-        return 'GuardedPool(cluster=%r, poolsize=%r)' % (self.config.cluster_name, self._poolsize)
+        return 'ConnectionManager(cluster=%r, poolsize=%r)' % (self.config.cluster_name, self._poolsize)
 
     @property
     def poolsize(self):
@@ -218,6 +229,7 @@ class ConnectionManager:
                 raise NoAvailableConnectionsInPoolError(
                     'No available connections in the pool: size=%s, in_use=%s, connected=%s' % (
                         self.poolsize, self.connections_in_use, self.connections_connected))
+
         return guard
 
     # Proxy the register_script method, so that the returned object will

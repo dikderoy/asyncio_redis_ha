@@ -2551,7 +2551,7 @@ class GuardedPoolTest(RedisPoolTest):
         def test():
             # Create pool
             connection = yield from self.create_pool()
-            self.assertEqual(repr(connection), "GuardedPool(cluster=%r, poolsize=1)" % 'mymaster')
+            self.assertEqual(repr(connection), "ConnectionManager(cluster=%r, poolsize=1)" % 'mymaster')
 
             # Test get/set
             yield from connection.set('key', 'value')
@@ -2612,7 +2612,7 @@ class GuardedPoolTest(RedisPoolTest):
             yield from asyncio.sleep(.5, loop=self.loop)
 
             # Test get/set
-            with self.assertRaises(NoAvailableConnectionsInPoolError) as e:
+            with self.assertRaises(NotConnectedError):
                 yield from connection.set('key', 'value')
 
             connection.close()

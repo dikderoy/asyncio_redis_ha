@@ -32,7 +32,7 @@ class RedisConnection(Connection):
     @asyncio.coroutine
     def configurable_create(cls, host='localhost', port=6379, *, password=None, db=0,
                             encoder=None, loop=None, protocol_class=ExtendedProtocol,
-                            reconnect_cb=None):
+                            auto_reconnect=True, reconnect_cb=None, ensure_connection_established=True):
         """
         :param host: Address, either host or unix domain socket path
         :type host: str
@@ -45,13 +45,22 @@ class RedisConnection(Connection):
         :param encoder: Encoder to use for encoding to or decoding from redis bytes to a native type.
         :type encoder: :class:`~asyncio_redis.encoders.BaseEncoder` instance.
         :param loop: (optional) asyncio event loop.
-        :type protocol_class: ~asyncio_redis_ha.ExtendedProtocol
+
         :param protocol_class: (optional) redis protocol implementation
+        :type protocol_class: ~asyncio_redis_ha.ExtendedProtocol
+
+        :param auto_reconnect: Enable auto reconnect
+        :type auto_reconnect: bool
+        :param reconnect_cb: (optional) coroutine callback, returning bool whatever connection should reconnect,
+            with following signature: `cb(~Connection connection)->bool`,
+            acts as backoff strategy (you may alter connection properties during the call),
+            auto_reconnect should be True in order to use this feature
         :type reconnect_cb: ~callable
-        :param reconnect_cb: (optional) callback, which return (host, port) tuple to reconfigure connection on reconnect
+        :param ensure_connection_established:  whatever to wait for connection
+         to be established before returning connection instance
+        :type ensure_connection_established: bool
         """
         # todo: test this method
-        # todo: add option to "not ensure" initial connection availability (for sentinel connections)
 
         assert port >= 0, "Unexpected port value: %r" % (port,)
         connection = cls()
@@ -66,31 +75,42 @@ class RedisConnection(Connection):
         connection._auto_reconnect = reconnect_cb is not None
 
         @asyncio.coroutine
-        def update_configuration():
-            connection.host, connection.port = yield from reconnect_cb()
+        def reconnect_hook():
+            if reconnect_cb:
+                should_reconnect = yield from reconnect_cb(connection)
+            else:
+                should_reconnect = True
+            if should_reconnect:
+                yield connection._reconnect()
+            else:
+                connection.close()
 
         # Create protocol instance
 
         def connection_lost():
             if not connection._closing and connection._auto_reconnect:
-                # First - update configuration from reconnect_cb, then launch reconnect task
-                ensure_future(update_configuration(), loop=connection._loop) \
-                    .add_done_callback(lambda: ensure_future(connection._reconnect(), loop=connection._loop))
+                # schedule reconnect hook execution
+                ensure_future(reconnect_hook(), loop=connection._loop)
 
         # Create protocol instance
         connection.protocol = protocol_class(password=password, db=db, encoder=encoder,
                                              connection_lost_callback=connection_lost, loop=connection._loop)
 
         # Connect
-        yield from connection._reconnect()
+        if ensure_connection_established:
+            yield from connection._reconnect()
+        else:
+            ensure_future(connection._reconnect(), loop=connection._loop)
 
         return connection
-
-        pass
 
     def _inc_reconnect_count(self):
         """increment reconnect count"""
         self._reconnect_count += 1
+
+    def _reset_reconnect_count(self):
+        """reset reconnect count to 0"""
+        self._reconnect_count = 0
 
     @asyncio.coroutine
     def _reconnect(self):
@@ -105,13 +125,14 @@ class RedisConnection(Connection):
                 else:
                     yield from self._loop.create_unix_connection(lambda: self.protocol, self.host)
                 self._reset_retry_interval()
-                self._inc_reconnect_count()
+                self._reset_reconnect_count()
                 return
             except OSError:
                 if not self._auto_reconnect or self._reconnect_count == 0:
                     raise ConnectionError
                 # Sleep and try again
                 self._increase_retry_interval()
+                self._inc_reconnect_count()
                 interval = self._get_retry_interval()
                 logger.log(logging.INFO, 'Connecting to redis failed. Retrying in %i seconds' % interval)
                 yield from asyncio.sleep(interval, loop=self._loop)
@@ -135,10 +156,12 @@ class SentinelConnection(RedisConnection):
         return connection
 
     @classmethod
-    def configurable_create(cls, host='localhost', port=26379, *, password=None, db=0, encoder=None, loop=None,
-                            protocol_class=SentinelProtocol, reconnect_cb=None):
-        return super().configurable_create(host, port, password=password, db=db, encoder=encoder, loop=loop,
-                                           protocol_class=protocol_class, reconnect_cb=reconnect_cb)
+    def configurable_create(cls, host='localhost', port=26379, *,
+                            encoder=None, loop=None, protocol_class=SentinelProtocol,
+                            auto_reconnect=True, reconnect_cb=None, ensure_connection_established=True, **kw):
+        return super().configurable_create(host, port, encoder=encoder, loop=loop,
+                                           protocol_class=protocol_class,
+                                           auto_reconnect=auto_reconnect, reconnect_cb=reconnect_cb)
 
     def __getattr__(self, name):
         # Only proxy commands.
