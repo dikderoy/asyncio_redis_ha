@@ -12,7 +12,7 @@ if sys.version_info <= (3, 4):
 setup(
     name='asyncio_redis_ha',
     author='Roman Bulgakov',
-    version='0.1.0',
+    version='0.1.1',
     license='MIT',
     url='https://github.com/dikderoy/asyncio_redis_ha',
 
