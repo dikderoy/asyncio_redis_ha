@@ -2607,6 +2607,9 @@ class ConnectionManagerTest(RedisPoolTest):
             connection.config.sentinels = []
 
             # Close transport
+            c = connection._connections[0]
+            c._auto_reconnect = False
+
             transport = connection._connections[0].transport
             transport.close()
             yield from asyncio.sleep(.5, loop=self.loop)

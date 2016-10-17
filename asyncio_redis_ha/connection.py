@@ -81,7 +81,7 @@ class RedisConnection(Connection):
             else:
                 should_reconnect = True
             if should_reconnect:
-                yield connection._reconnect()
+                yield from connection._reconnect()
             else:
                 connection.close()
 
