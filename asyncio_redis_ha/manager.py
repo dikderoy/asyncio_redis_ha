@@ -7,6 +7,12 @@ from asyncio_redis_ha.connection import SentinelConnection, RedisConnection
 from asyncio_redis_ha.log import logger
 from asyncio_redis_ha.protocol import ExtendedProtocol
 
+# In Python 3.4.4, `async` was renamed to `ensure_future`.
+try:
+    ensure_future = asyncio.ensure_future
+except AttributeError:
+    ensure_future = asyncio.async
+
 
 class HighAvailabilityConfig:
     def __init__(self,
@@ -43,6 +49,7 @@ class ConnectionManager:
         self._loop = loop or asyncio.get_event_loop()
         self.config = config
         self.cluster_name = self.config.cluster_name
+        self._discover_lock = asyncio.Lock()
 
     @classmethod
     @asyncio.coroutine
@@ -129,29 +136,55 @@ class ConnectionManager:
         :type protocol_class: :class:`~asyncio_redis.RedisProtocol`
         :param protocol_class: (optional) redis protocol implementation
         """
+
+        @asyncio.coroutine
+        def report_connection_lost(connection: RedisConnection):
+            """reconnect strategy, 3 attempts, then - rediscover"""
+            if connection._reconnect_count <= 3:
+                return True
+            else:
+                logger.info('connection seems lost - schedule rediscover')
+                # ensure_future(self._discover_master(), self._loop)
+                try:
+                    yield from self._discover_master()
+                except NotConnectedError:
+                    pass
+                return False
+
         logger.info('connecting redis-master (%s, %s)', host, port)
         connection = yield from RedisConnection.configurable_create(
             host=host,
             port=port,
             password=self.config.password,
             db=self.config.db,
-            auto_reconnect=False,
+            auto_reconnect=True,
             loop=self._loop,
-            protocol_class=protocol_class
+            protocol_class=protocol_class,
+            reconnect_cb=report_connection_lost
         )
         """:type connection RedisConnection"""
         self._connections.append(connection)
         return connection
 
     @asyncio.coroutine
-    def discover(self):
-        yield from self._discover_master()
-
-    @asyncio.coroutine
     def _discover_master(self):
         """
-        :return: ExtendedProtocol
+        performs a discover sequence, only one runs at a time (lock used)
         """
+
+        lock = self._discover_lock
+        was_locked = lock.locked()
+
+        yield from lock.acquire()
+        logger.debug('acquired discovery lock')
+
+        if was_locked or self.connections_connected == self.poolsize:
+            logger.debug('skipping discovery as it was just performed')
+            lock.release()
+            return
+
+        logger.debug('start discovery')
+
         config_pair = None
         self._close_master_pool()
 
@@ -166,8 +199,12 @@ class ConnectionManager:
                 break
             except ConnectionError:
                 pass
+            except Exception as e:
+                lock.release()
+                raise e
 
         if not config_pair or not isinstance(config_pair, list):
+            lock.release()
             raise NotConnectedError('Failed to discover redis-master')
 
         if len(config_pair) >= 2:
@@ -183,10 +220,15 @@ class ConnectionManager:
                     self._close_master_pool()
             except ConnectionError:
                 pass
+            except Exception as e:
+                lock.release()
+                raise e
 
         if self.connections_connected < 1:
-            raise NoAvailableConnectionsInPoolError
+            lock.release()
+            raise NotConnectedError
         logger.info('master at %s', config_pair)
+        lock.release()
 
     def _discover_sentinels(self):
         # todo: add sentinel discovery
