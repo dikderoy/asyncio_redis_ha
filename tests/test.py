@@ -43,7 +43,7 @@ from asyncio_redis.replies import (
 )
 
 from asyncio_redis_ha.connection import SentinelConnection, RedisConnection
-from asyncio_redis_ha.manager import ConnectionManager, HighAvailabilityConfig
+from asyncio_redis_ha.manager import ConnectionManager
 from asyncio_redis_ha.protocol import ExtendedProtocol, SentinelProtocol
 from asyncio_redis_ha.replies import NestedDictReply, NestedListReply
 
@@ -2523,7 +2523,7 @@ class SentinelProtocolTest(TestCase):
         self.assertIsInstance(data, list)
 
 
-class GuardedPoolTest(RedisPoolTest):
+class ConnectionManagerTest(RedisPoolTest):
     """ Test connection pooling. """
 
     def setUp(self):

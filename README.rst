@@ -12,17 +12,22 @@ Features
 --------
 
 - Sentinel support ontop of asyncio-redis:
+
   - role
   - sentinels
   - slaves
   - get_master_addr_by_name
+
 - Extended Redis support (versions 3.x)
+
   - role
 
 - Mostly tested
+
   - all tests from asyncio-redis_ are green
   - new functionality covered and guaranteed to run in same conditions
   - failover scenarios tested manually
+
 
 Dependencies
 ------------
@@ -44,6 +49,7 @@ Roadmap
 - provide automated testing for failover scenarios
 - implement preemptive connection reconfiguration
   (instant failover detection based on channel events from Sentinel daemon)
+- hiredis support
 
 
 
