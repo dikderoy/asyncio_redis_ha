@@ -2532,16 +2532,16 @@ class GuardedPoolTest(RedisPoolTest):
 
     @asyncio.coroutine
     def create_pool(self, poolsize=1, auto_reconnect=False, **kwargs):
-        config = HighAvailabilityConfig(
+        c = yield from self.pool_class.create(
             cluster_name='mymaster',
             sentinels=[
-                ('172.17.0.5', 26379),
+                ('172.17.0.4', 26379),
                 ('172.17.0.6', 26379),
                 ('172.17.0.7', 26379)
-            ], **kwargs)
-
-        c = self.pool_class(config, poolsize=poolsize, loop=self.loop)
-        yield from c.discover()
+            ],
+            poolsize=poolsize,
+            loop=self.loop,
+            **kwargs)
         return c
 
     def test_pool(self):

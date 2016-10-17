@@ -44,6 +44,52 @@ class ConnectionManager:
         self.config = config
         self.cluster_name = self.config.cluster_name
 
+    @classmethod
+    @asyncio.coroutine
+    def create(cls,
+               cluster_name: str,
+               sentinels: list,
+               db=0,
+               password=None,
+               encoder=None,
+               protocol_class=ExtendedProtocol,
+               poolsize=1,
+               loop=None):
+        """
+        creates new instance of ConnectionManager, and initializes it
+
+        :type cluster_name: str
+        :param cluster_name: redis cluster name
+        :type sentinels: list[tuple]
+        :param sentinels: list of known sentinel instances as tuples ``(host, port)``
+        :param password: Redis database password
+        :type password: bytes
+        :param db: Redis database
+        :type db: int
+        :param encoder: Encoder to use for encoding to or decoding from redis bytes to a native type.
+        :type encoder: :class:`~asyncio_redis.encoders.BaseEncoder` instance.
+        :param loop: (optional) asyncio event loop.
+        :type protocol_class: :class:`~asyncio_redis_ha.ExtendedProtocol`
+        :param protocol_class: (optional) redis protocol implementation:param protocol_class:
+        :type poolsize: int
+        :param poolsize: The number of parallel connections.
+        :return: ConnectionManager
+        """
+        config = HighAvailabilityConfig(
+            cluster_name=cluster_name,
+            sentinels=sentinels,
+            db=db,
+            password=password,
+            encoder=encoder,
+            protocol_class=protocol_class,
+        )
+
+        self = cls(config, poolsize=poolsize, loop=loop)
+        # run initial discovery
+        yield from self._discover_master()
+        # now we are ready
+        return self
+
     @asyncio.coroutine
     def _recreate_sentinel_connections(self):
         """creates connections for configured sentinels, closes previously opened connections if any"""
@@ -143,9 +189,11 @@ class ConnectionManager:
         logger.info('master at %s', config_pair)
 
     def _discover_sentinels(self):
+        # todo: add sentinel discovery
         pass
 
     def _discover_slaves(self):
+        # todo: add slave discovery and promotion algorithms
         pass
 
     def _close_master_pool(self):
