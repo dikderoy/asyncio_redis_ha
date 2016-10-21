@@ -57,7 +57,7 @@ HOST = os.environ.get('REDIS_HOST', 'localhost')
 START_REDIS_SERVER = bool(os.environ.get('START_REDIS_SERVER', False))
 
 SENTINEL_PORT = int(os.environ.get('SENTINEL_PORT', 26379))
-SENTINEL_HOST = os.environ.get('SENTINEL_HOST', '172.17.0.6')
+SENTINEL_HOST = os.environ.get('SENTINEL_HOST', 'sentinel_1')
 
 # In Python 3.4.4, `async` was renamed to `ensure_future`.
 try:
@@ -2535,9 +2535,9 @@ class ConnectionManagerTest(RedisPoolTest):
         c = yield from self.pool_class.create(
             cluster_name='mymaster',
             sentinels=[
-                ('172.17.0.4', 26379),
-                ('172.17.0.6', 26379),
-                ('172.17.0.7', 26379)
+                ('sentinel_1', 26379),
+                ('sentinel_2', 26379),
+                ('sentinel_3', 26379)
             ],
             poolsize=poolsize,
             loop=self.loop,

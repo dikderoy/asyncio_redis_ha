@@ -79,3 +79,21 @@ except for initialization of an entry point
 .. _asyncio-redis: https://github.com/jonathanslenders/asyncio-redis
 .. _the asyncio documentation: http://docs.python.org/dev/library/asyncio.html
 .. _PEP 3156: http://legacy.python.org/dev/peps/pep-3156/
+
+Testing
+-------
+
+In order to run tests without settin up redis and redis-cluster manually,
+use docker and docker-compose with provided files.
+
+1. launch redis-cluster via docker-compose:
+
+.. code:: bash
+
+    docker-compose up -d
+
+2. run tests
+
+.. code:: bash
+
+    ./docker-run-tests.sh
