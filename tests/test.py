@@ -41,6 +41,7 @@ from asyncio_redis.replies import (
     StatusReply,
     ZRangeReply,
 )
+from docker.client import Client
 
 from asyncio_redis_ha.connection import SentinelConnection, RedisConnection
 from asyncio_redis_ha.manager import ConnectionManager
@@ -52,12 +53,32 @@ try:
 except ImportError:
     hiredis = None
 
+
+def setup_docker_env():
+    client = Client(base_url='unix://var/run/docker.sock')
+    """:var clist Container"""
+    master = [x['NetworkSettings']['Networks']['bridge']['IPAddress'] for x in
+              client.containers(filters={'name': 'docker_master*', 'status': 'running'})]
+    slaves = [x['NetworkSettings']['Networks']['bridge']['IPAddress'] for x in
+              client.containers(filters={'name': 'docker_slave*', 'status': 'running'})]
+    sentinels = [x['NetworkSettings']['Networks']['bridge']['IPAddress'] for x in
+                 client.containers(filters={'name': 'docker_sentinel*', 'status': 'running'})]
+
+    return {
+        'master': master[0],
+        'sentinels': sentinels,
+        'slaves': slaves
+    }
+
+
+DOCKER_ENV = setup_docker_env()
+
 PORT = int(os.environ.get('REDIS_PORT', 6379))
-HOST = os.environ.get('REDIS_HOST', 'localhost')
+HOST = os.environ.get('REDIS_HOST', DOCKER_ENV['master'])
 START_REDIS_SERVER = bool(os.environ.get('START_REDIS_SERVER', False))
 
 SENTINEL_PORT = int(os.environ.get('SENTINEL_PORT', 26379))
-SENTINEL_HOST = os.environ.get('SENTINEL_HOST', 'sentinel_1')
+SENTINEL_HOST = os.environ.get('SENTINEL_HOST', DOCKER_ENV['sentinels'][0])
 
 # In Python 3.4.4, `async` was renamed to `ensure_future`.
 try:
@@ -2534,11 +2555,7 @@ class ConnectionManagerTest(RedisPoolTest):
     def create_pool(self, poolsize=1, auto_reconnect=False, **kwargs):
         c = yield from self.pool_class.create(
             cluster_name='mymaster',
-            sentinels=[
-                ('sentinel_1', 26379),
-                ('sentinel_2', 26379),
-                ('sentinel_3', 26379)
-            ],
+            sentinels=[(x, 26379) for x in DOCKER_ENV['sentinels']],
             poolsize=poolsize,
             loop=self.loop,
             **kwargs)
